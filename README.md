@@ -100,4 +100,4 @@ To define the blood gene expression profile and identify biomarkers associated w
    ```R
    install.packages(c("affy", "limma", "GEOquery", "pheatmap", "ggplot2", "dplyr"))
    ```
-3. **Running the Analysis**: Open `Project.Rmd` in RStudio and knit the document to reproduce the analysis and generate the report.
+3. **Running the Analysis**: Open `analysis_workflow.Rmd` in RStudio and knit the document to reproduce the analysis and generate the report.
