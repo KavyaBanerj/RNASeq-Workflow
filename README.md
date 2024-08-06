@@ -89,8 +89,8 @@ To define the blood gene expression profile and identify biomarkers associated w
 
 ## Files and Structure
 
-- **final project.pdf**: Contains detailed documentation of the study, including methods, analysis, and results.
-- **Project.Rmd**: The R Markdown file used for the analysis, contains all code, plots, and detailed explanations of the methods and results.
+- **analysis.pdf**: Contains detailed documentation of the study, including methods, analysis, and results.
+- **analysis_workflow.Rmd**: The R Markdown file used for the analysis, contains all code, plots, and detailed explanations of the methods and results.
 
 ---
 
