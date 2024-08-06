@@ -1,0 +1,716 @@
+---
+title: "Distinct Transcriptomic Profiles of Early-Onset Atopic Dermatitis in Blood of Pediatric Patients"
+author: "Kavya Banerjee"
+date: "2023-11-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Final Project
+
+## Loading data
+```{r, ,warning=FALSE, message=FALSE}
+# Load libraries
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(reshape2)
+library(stringr)
+library(tibble)
+library(viridis)
+library(ggrepel)
+library(GEOquery)
+library(limma)
+library(gcrma)
+library(affy)
+library(affydata)
+library(affyPLM)
+library(fpc)
+library(utils)
+library(ggpubr)
+
+path <- "~/Desktop/Gene_Expression/Datasets"
+# Uncomment to dowload files from NCBI GEO
+setwd(path)
+getGEOSuppFiles("GSE116486")
+
+path <- normalizePath(path)
+
+# Ensure the full path to the tar file is correct
+tar_file <- file.path(path, "GSE116486/GSE116486_RAW.tar")
+exdir <- file.path(path, "GSE116486/GSE116486_RAW")
+
+# Create the directory if it doesn't exist
+if (!dir.exists(exdir)) {
+  dir.create(exdir, recursive = TRUE)
+}
+
+# Extract the tar file
+untar(tar_file, exdir = exdir, verbose = TRUE)
+tar_file <- file.path(path, "GSE116486/GSE116486_RAW.tar")
+exdir <- file.path(path, "GSE116486/GSE116486_RAW")
+
+# Create the directory if it doesn't exist
+if (!dir.exists(exdir)) {
+  dir.create(exdir, recursive = TRUE)
+}
+
+# Extract tar file
+untar(tar_file, exdir = exdir)
+
+dir.path <- paste(path, "GSE116486/GSE116486_RAW", sep = "/")
+# list.files(dir.path)
+gz_files <- list.files(path = dir.path, pattern = ".CEL.gz$", full.names = TRUE)
+
+# Function to decompress a file
+decompress_file <- function(gz_path) {
+  command <- paste0("gunzip -k ", gz_path)
+  system(command)
+}
+
+# Apply the decompression function to each file
+purrr::map(gz_files, decompress_file)
+
+cel.files <- sort(list.files(path = dir.path, pattern = ".CEL$", full = TRUE))
+data <-  ReadAffy(filenames=cel.files)
+```
+
+```{r}
+pheno_data <- pData(data) %>% 
+  rownames_to_column("sample_id") %>% 
+  mutate(
+    gsm_number = sub("^([A-Z]+[0-9]+)_.*$", "\\1", sample_id),
+    sample =  sub("^[A-Z]+[0-9]+_([0-9]+)_.*$", "\\1", sample_id),
+    group = case_when(
+      str_sub(gsm_number, -2, -1) %in% c("45", "72", "78", "82", "83",
+                                         as.character(51:59), as.character(63:66)) ~ "CB",
+      TRUE ~ "AD" 
+    ),
+    sample_label = paste(gsm_number, group, sep = "-")
+  ) %>% 
+  pull(sample_label)
+
+sampleNames(data) <- pheno_data
+sample_anno = data@phenoData
+sample_anno@data$sample <- pheno_data
+```
+
+## Normalisation
+```{r}
+# Define a list of normalization functions
+norm_functions <- list(
+  "RMA" = function(x) expresso(
+  x,
+  normalize.method="quantiles", summary.method="medianpolish",
+  pmcorrect.method = "pmonly",
+  bg.correct = TRUE,
+  bgcorrect.method = "rma",
+),
+  "GCRMA" = function(x) gcrma::gcrma(x),
+  "MAS" = function(x) expresso(x, normalize.method="quantiles", 
+                               summary.method="medianpolish", 
+                               pmcorrect.method = "mas",
+                               bg.correct = TRUE, 
+                               bgcorrect.method = "mas")
+)
+
+# Apply each normalization and store results
+normalized_data <- lapply(norm_functions, function(f) f(data))
+```
+
+```{r, fig.height=16, fig.width=8}
+# Plotting boxplots for each normalization method
+par(mfrow=c(4, 1))
+# Un-normalised data 
+boxplot(data, which='pm', main= "None", las=2, col="lightblue", names=sample_anno@data$sample, cex.axis=0.8) 
+
+# Normalized data
+for (i in 1:length(normalized_data)) {
+  plotTitle <- names(normalized_data)[i]
+  boxplot(exprs(normalized_data[[i]]), main=plotTitle, las=2, col="lightblue", cex.axis=0.8)
+}
+```
+
+```{r}
+# Plotting density plots for each normalization method
+# Include raw data (log2 transformed) in the list of datasets
+# normalized_data <- list("none" = log2(pm(data)))  
+normalized_data_d <- list()
+normalized_data_d[["RMA"]] <- exprs(normalized_data[["RMA"]])
+normalized_data_d[["GCRMA"]] <- exprs(normalized_data[["GCRMA"]])
+normalized_data_d[["MAS"]] <- exprs(normalized_data[["MAS"]])
+
+# Combine raw and normalized data into a single list for plotting
+all_data <- c(list("none" = log2(pm(data))), normalized_data_d)
+
+# Calculate the plot colors and legend labels
+plot_colors <- rainbow(length(all_data))
+legend_labels <- names(all_data)
+
+# Plot the densities
+plot(NULL, xlim=c(-10, 15), ylim=c(0, 1.5), xlab="Expression Level", ylab="Density", main="Density Plots of Data")
+for (i in seq_along(all_data)) {
+  dens <- density(as.vector(all_data[[i]]), adjust=1) # adjust parameter can be tweaked
+  lines(dens, col=plot_colors[i], lwd=2)
+}
+
+# Add a legend to the plot
+legend("topright", inset=.05, legend=legend_labels, fill=plot_colors, border="black", box.lty=1)
+```
+
+```{r, message=FALSE}
+data_norm <- expresso(
+  data,
+  normalize.method="quantiles", summary.method="medianpolish",
+  pmcorrect.method = "pmonly",
+  bg.correct = TRUE,
+  bgcorrect.method = "rma",
+) # returns expression data in log2 scale
+
+# data_norm <- gcrma(data)
+```
+
+##  Outlier Analysis
+
+```{r, fig.height=6, fig.width=6}
+
+# Extract the probe intensities and transpose the columns
+probe_data_unfiltered <- exprs(data_norm) %>% as.data.frame() %>% dplyr::select(starts_with("GSM"))
+
+cor_matrix <- cor((probe_data_unfiltered))
+cor_matrix_long <-  reshape2::melt(cor_matrix) 
+
+# Plot graph
+ggplot(cor_matrix_long, aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_viridis(discrete=FALSE) +
+  labs(title = "Correlation Matrix between Samples", x = "Samples", y = "Samples", fill = "expression") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, size = 6),
+    axis.text.y = element_text( size = 6),
+  )
+```
+
+```{r}
+# Calculate the distance and perform hierarchical clustering
+dist_matrix <- dist(t(probe_data_unfiltered))
+hclust <- hclust(dist_matrix)
+# Plot the dendrogram
+plot(hclust, main="Hierarchical Clustering Dendrogram between Samples", xlab="Samples", sub="", cex=0.6)
+```
+
+No outliers observed.
+
+## Filtering Low-expression genes
+
+Based on the plot, genes with CV less than 25% are excluded DGE analysis.
+```{r}
+cv_values <- apply(probe_data_unfiltered, 1, function(x) sd(x, na.rm = TRUE) / mean(x, na.rm = TRUE))
+
+# Convert CV values to percent
+cv_values_percent <- cv_values * 100
+
+# Calculate the peak CV 
+density_info <- density(cv_values_percent)
+peak_cv_percent <- density_info$x[which.max(density_info$y)]
+
+# Calculate the 25th and 50th percentiles for CV
+quantile_cv_25_percent <- quantile(cv_values_percent, 0.25)
+median_cv_percent <- median(cv_values_percent)
+
+cv_df <- data.frame(cv_values = cv_values_percent)
+max_count <- max(table(cut(cv_values_percent, breaks=50)))
+
+# Create the histogram using ggplot2 and add the vertical lines and text annotations
+ggplot(cv_df, aes(x=cv_values)) +
+  geom_histogram(bins=50, fill="lightblue", color="black") +
+  geom_vline(aes(xintercept=peak_cv_percent), color="red", linetype="dashed", linewidth=1) +
+  geom_vline(aes(xintercept=quantile_cv_25_percent), color="green", linetype="dashed", linewidth=1) +
+  geom_vline(aes(xintercept=median_cv_percent), color="blue", linetype="dashed", linewidth=1) +
+  geom_text(aes(x=1, y=max_count, label=paste("Peak CV =", round(peak_cv_percent, 2), "%")), vjust=1, color="red", hjust=-2) +
+  geom_text(aes(x=1, y=max_count - 1000, label=paste("25th Percentile CV =", round(quantile_cv_25_percent, 2), "%")), vjust=1, color="green", hjust=-2) +
+  geom_text(aes(x=1, y=max_count - 2000, label=paste("Median CV =", round(median_cv_percent, 2), "%")), vjust=1, color="blue", hjust=-2) +
+  theme_minimal() +
+  labs(title="Distribution of Coefficient of Variation (CV) for Genes in Percent",
+       x="Coefficient of Variation (CV) [%]", y="Frequency") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(legend.position="topright")
+
+
+# Filter genes with CV in percent greater than the 25th percentile
+filtered_genes <- names(cv_values_percent)[cv_values_percent >= quantile_cv_25_percent]
+probe_data <- probe_data_unfiltered[filtered_genes, ]
+```
+
+## Feature Selection & Multiple Testing - t-test based
+We have two conditions, thus a two sample test will be performed. 
+First,check for normality of distribution.
+```{r, fig.height= 5, fig.width= 3}
+# Check for normal distribution
+
+ad_samples <- grep("-AD$", names(probe_data))
+cb_samples <- grep("-CB$", names(probe_data))
+
+group_ad <- probe_data[, ad_samples]
+group_cb <- probe_data[, cb_samples]
+
+par(mfrow=c(2, 1))
+hist(as.vector(t(group_ad)), main="Histogram for Group AD", xlab="Gene Expression", col="blue")
+hist(as.vector(t(group_cb)), main="Histogram for Group CB", xlab="Gene Expression", col="green")
+```
+Distribution is skewed to the left, thus a non-paramtric t-test, wilcox test is performed for differential gene expression.
+```{r}
+library(nortest)
+
+# Transpose the data
+transposed_ad <- t(group_ad)
+transposed_cb <- t(group_cb)
+
+# Anderson-Darling normality test for each sample in Group AD
+ad_test_results <- apply(transposed_ad, 1, function(x) ad.test(x)$p.value)
+
+# Anderson-Darling normality test for each sample in Group CB
+cb_test_results <- apply(transposed_cb, 1, function(x) ad.test(x)$p.value)
+
+# Print the results
+print("Anderson-Darling Test P-Values for Each Sample in Group AD:")
+print(ad_test_results)
+print("Anderson-Darling Test P-Values for Each Sample in Group CB:")
+print(cb_test_results)
+```
+
+False Discovery Rate (FDR):
+
+FDR is a statistical method that addresses the problem of multiple comparisons. It controls the expected proportion of false discoveries (false positives) among the significant results.In gene expression analysis, FDR adjusts p-values to provide a more realistic estimate of the number of false positives in your list of significant genes.By controlling the FDR at a specific level (e.g., FDR < 0.05), you can mitigate the risk of identifying too many false positives when conducting multiple tests.
+
+FDR correction provides a more conservative and reliable approach for identifying significant genes when conducting large-scale experiments.
+```{r}
+# try.t.test.p.value <- function(...) {
+#     obj <- try(t.test(...), silent=TRUE)
+#     if (class(obj) == "try-error") {
+#         return(NA)
+#     } else {
+#         return(obj$p.value)
+#     }
+# }
+# 
+# t.test.gene <- function(gene.idx, s1, s2) {
+#     gene_data <- probe_data[gene.idx, ]
+#     x1 <- gene_data[s1]
+#     x2 <- gene_data[s2]
+#     p_value <- try.t.test.p.value(x1, x2, alternative="two.sided", var.equal=F)
+#     gene_name <- rownames(probe_data)[gene.idx]
+#     return(tibble(gene.name = gene_name, gene.idx = gene.idx, p.value = p_value))
+# }
+
+# try.wilcox.test.p.value <- function(...) {
+#     obj <- try(wilcox.test(...), silent=TRUE)
+#     if (class(obj) == "try-error") {
+#         return(NA)
+#     } else {
+#         return(obj$p.value)
+#     }
+# }
+
+wilcox.test.gene <- function(gene.idx, s1, s2) {
+    gene_data <- probe_data[gene.idx, ]
+    x1 <- as.numeric(gene_data[s1])
+    x2 <- as.numeric(gene_data[s2])
+    p_value <- wilcox.test(x1, x2, alternative="two.sided", exact=F, correct=T)$p.value
+    gene_name <- rownames(probe_data)[gene.idx]
+    return(tibble(gene.name = gene_name, gene.idx = gene.idx, p.value = p_value))
+}
+
+t_test_pvalues <- map_df(1:nrow(probe_data),~wilcox.test.gene(.x, ad_samples, cb_samples))
+# Adjust for multiple testing - FDR approach
+t_test_pvalues$p.adjusted <- p.adjust(t_test_pvalues$p.value, method = "fdr") 
+
+# Count the number of rows where p.adjusted < 0.05
+significant_rows <- sum(t_test_pvalues$p.adjusted < 0.05, na.rm = TRUE)
+
+ggplot(t_test_pvalues, aes(x=p.adjusted)) +
+  geom_histogram(binwidth=0.05, fill="skyblue", color = "black", alpha = 0.6) +
+  labs(title="adjusted p-values distribution for AD and CB classes\n(FDR cutoff = 0.05)",
+       x="P-value", y="Count of Probesets",
+       subtitle = "(log_2 transformed data)") +
+  geom_vline(aes(xintercept=0.1),  colour = "red", linetype = "longdash") +
+  # geom_vline(aes(xintercept=0.01), colour = "red",) + 
+  annotate("text", x= 0.78, y= 4000, size = 4,
+           label=paste("Probesets\np.adjust<0.05:\n", significant_rows)) + 
+  theme_bw()
+```
+
+## ## Feature Selection & Multiple Testing - eBayes approach (limma)
+```{r}
+probe_levels <- sapply(strsplit(colnames(probe_data), "-", fixed = TRUE), function(x) x[2])
+design <- model.matrix(~ factor(probe_levels))
+# Fit the linear model to the dataset
+fit <- lmFit(probe_data, design)
+# Apply the empirical Bayes smoothing to the standard errors
+fit2 <- eBayes(fit)
+# Extract the table of statistics - number=Inf to retrieve results for all genes
+ebayes_results <- topTable(fit2, number=Inf, sort.by="P") 
+
+ebayes_results_df <- ebayes_results %>% 
+  rownames_to_column("gene.names") %>% 
+  mutate(p.adjusted = p.adjust(P.Value, method = "fdr")) %>%  # Adjust P-Values for FDR
+  arrange(p.adjusted)  # Arrange by the FDR-adjusted P-Values
+
+
+# Merge the significant results from both tests
+merged_results <- merge(ebayes_results_df, t_test_pvalues, by.x = "gene.names", by.y = "gene.name", suffixes = c("_ebayes", "_wilcox"))
+
+# Plot the p-values for the Wilcoxon test vs. the empirical Bayes method for the same genes
+plot(merged_results$p.adjusted_wilcox, merged_results$p.adjusted_ebayes, pch=19, col="blue",
+     xlab="Wilcoxon test p-values (adjusted for FDR)", ylab="Empirical Bayes p-values (adjusted for FDR)", 
+     main="Comparison of Wilcoxon test and Empirical Bayes p-values")
+
+# Add a y=x reference line to identify where p-values are equal
+abline(0,1,col="red")
+
+# Highlight the genes with adjusted p-value < 0.05 in both methods
+dual_significant <- merged_results[merged_results$p.adjusted_wilcox < 0.05 & merged_results$p.adjusted_ebayes < 0.05, ]
+
+# Add points for the dual significant genes in green
+points(dual_significant$p.adjusted_wilcox, dual_significant$p.adjusted_ebayes, pch=19, col="green")
+
+# Calculate the number of dual significant genes
+num_dual_significant <- nrow(dual_significant)
+
+# Add a legend to the plot, including the number of dual significant genes
+legend("bottomright", 
+       legend=c(paste("All genes (n=", nrow(merged_results), ")", sep=""), 
+                paste("Adjusted P-value < 0.05 in both (n=", num_dual_significant, ")", sep="")), 
+       col=c("blue", "green"), pch=19)
+```
+## Fold Change 
+```{r}
+calculate_fold_change <- function(gene.idx, s1, s2) {
+    gene_data <- probe_data[gene.idx, ]
+    # Fold change calculation for log2-transformed data
+    fold_change <- rowMeans(gene_data[, s1]) - rowMeans(gene_data[, s2])
+    fold_change_linear <- 2^fold_change
+    gene_name <- rownames(probe_data)[gene.idx]
+    return(tibble(
+      gene.name = gene_name, gene.idx = gene.idx, 
+      log2_fold.change = fold_change, fold.change = fold_change_linear))
+}
+
+# Applying the fold change function to each gene
+fold_change_results <- map_df(1:nrow(probe_data), ~calculate_fold_change(.x, ad_samples, cb_samples))
+```
+
+## Volcano Plot 
+```{r, warning=FALSE}
+# Combine fold change results with t-test results
+data_fold <- left_join(t_test_pvalues, fold_change_results, by = c("gene.name", "gene.idx"))
+
+# setting thresholds
+p.adjust_threshold <-  0.05
+upper.fold.ch_threshold <- log2(1.2)
+lower.fold.ch_threshold <- -upper.fold.ch_threshold
+
+# Add log10 transformed adjusted p-values to the combined results
+data_fold <- data_fold %>% 
+  mutate(
+    log10_p_adjusted =  -log10(data_fold$p.adjusted),
+    expression = case_when(
+      p.adjusted < p.adjust_threshold & log2_fold.change > upper.fold.ch_threshold  ~ "Upregulated", 
+      p.adjusted < p.adjust_threshold & log2_fold.change < lower.fold.ch_threshold  ~ "Downregulated", 
+      TRUE ~   "Not Significant")
+)
+
+# Sorting to find top upregulated and downregulated genes
+top_upregulated_genes <- data_fold %>%
+  filter(log2_fold.change > upper.fold.ch_threshold  & p.adjusted < p.adjust_threshold) %>%
+  arrange(p.adjusted)
+
+top_downregulated_genes <- data_fold %>%
+  filter(log2_fold.change < lower.fold.ch_threshold & p.adjusted < p.adjust_threshold) %>%
+  arrange(p.adjusted) 
+
+# Combine these top genes for labeling ( top 5)
+top_genes_to_label <- rbind(top_upregulated_genes %>% head(5), top_downregulated_genes %>% head(5))
+
+# Volcano plot for upregulated, downregulated, and non-significant genes
+ggplot(data_fold, aes(x = log2_fold.change, y = log10_p_adjusted)) +
+  geom_point(aes(color =expression), alpha = 0.5) +
+  scale_color_manual(values = c("Downregulated" = "blue", "Not Significant" = "grey", "Upregulated" = "red")) +
+  theme_minimal() +
+  labs(title = "Volcano Plot of Gene Expression",
+       x = "Log2 Fold Change",
+       y = "-Log10 Adjusted P-Value",
+       color = "Regulation") +
+  geom_hline(yintercept = -log10(p.adjust_threshold), linetype = "dashed", color = "black") +
+  geom_vline(xintercept = c(lower.fold.ch_threshold, upper.fold.ch_threshold), linetype = "dashed", color = "black") +
+  geom_label_repel(data = top_genes_to_label, aes(label = gene.name), size = 3)
+```
+
+## Significant Gene Scores
+```{r}
+# Significant genes scores
+significant_genes <- data_fold %>% filter(p.adjusted < p.adjust_threshold)
+
+# Create a histogram of -log10 adjusted p-values
+ggplot(significant_genes, aes(x = p.adjusted)) +
+  geom_histogram(binwidth = 0.005, fill = "dodgerblue", color = "black") + # Adjust binwidth as needed
+  theme_minimal() +
+  labs(title = "Histogram of Adjusted P-Values of Significant Genes",
+       subtitle = paste("FDR cutoff =", p.adjust_threshold),
+       x = "Adjusted P-Value",
+       y = "Frequency")
+```
+
+## Dimensionality Reduction
+why pca? 
+It simplifies data with many variables to a few principal components, enables the visualization of high-dimensional data in 2D or 3D.
+By capturing the main variance, it helps reveal hidden patterns in the data.
+Assist in Interpretation: The principal components can sometimes be linked to biological processes.
+Manage Collinearity: PCA transforms correlated variables into a set of uncorrelated principal components.
+Improve Efficiency: It's scalable and computationally efficient for large datasets.
+```{r}
+# Subset the probe_data by significant genes
+significant_gene_data <- probe_data[rownames(probe_data) %in% significant_genes$gene.name, ]
+
+sample_group <- t(significant_gene_data) %>% 
+  as.data.frame() %>% 
+  mutate(
+    sample_label = rownames(.),
+    group =  ifelse(str_detect(sample_label, "^[A-Z]+[0-9]+-CB$"), "CB", "AD")
+  ) %>% 
+  dplyr::select(sample_label, group)
+
+# Perform PCA using prcomp
+pca_results <- prcomp(t(significant_gene_data), center = TRUE, scale. = TRUE)
+pca_data <- as.data.frame(pca_results$x)
+
+# Extract the variance explained by each principal component
+var_explained <- pca_results$sdev^2 / sum(pca_results$sdev^2)
+
+# groups is vector of sample labels (AD, CB)
+pca_data$group <- sample_group$group
+
+# PCA scatter plot of the first two principal components
+ggplot(pca_data, aes(x = PC1, y = PC2, color = group)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "PCA of Significant Genes",
+       subtitle = paste("Variance PC1:", round(var_explained[1] * 100, 2), "%",
+                        "PC2:", round(var_explained[2] * 100, 2), "%"),
+       x = paste("Principal Component 1 (", round(var_explained[1] * 100, 2), "% variance)"),
+       y = paste("Principal Component 2 (", round(var_explained[2] * 100, 2), "% variance)"))
+```
+```{r}
+
+# Creating a dataframe for the scree plot
+scree_data <- data.frame(PC = seq_along(var_explained), Variance = var_explained)
+
+# Plotting Scree Plot
+plot(c(1:length(var_explained)),  pca_results$sdev^2, type = "b", xlab = "# Components", 
+     ylab = "% Variance Explained", pch = 21, col = 1, bg = 3, cex = 1.5)
+title("Scree Plot Showing % Variability Explained by Each Principal Component")
+```
+```{r}
+library("factoextra")
+# Variable contributions on axes 1 + 2
+fviz_contrib(pca_results, choice="var", axes = 1:2, sort.val ="asc", top = 50,) +
+   theme(axis.text.x = element_text(angle=90, size = 8)) +
+  labs(
+    title = "Contribution of probesets in PC 1 vs PC2",
+    x = "Probesets"
+  )
+```
+
+## Clustering
+```{r,  fig.height=12, fig.width=8}
+# Extract group names from the column names
+group_names <- sapply(strsplit(colnames(significant_gene_data), "-", fixed = TRUE), function(x) x[2])
+
+# Create an ordered factor based on the group names to arrange the samples
+group_factor <- factor(group_names, levels = c("CB", "AD"))
+
+# Order the columns of your data matrix by this factor
+significant_gene_data_ordered <- significant_gene_data[, order(group_factor)]
+
+# Proceed with the heatmap generation
+# Open a PNG file for plotting
+# png("ordered_heatmap.png", width = 1200, height = 1200, res = 300)
+
+# Calculate distance matrices using euclidean distance
+# Note that we are using the ordered data matrix
+sample_dist <- dist(t(significant_gene_data_ordered), method = "euclidean")
+gene_dist <- dist(significant_gene_data_ordered, method = "euclidean")
+
+# Perform hierarchical clustering with complete linkage
+# Note that we are NOT specifying Colv as we want to maintain the order we just created
+sample_cluster <- hclust(sample_dist, method = "complete")
+gene_cluster <- hclust(gene_dist, method = "complete")
+
+par(cex.main=0.7, cex.lab=0.2, cex.axis=0.4)
+
+# Create a heatmap with the hierarchical clustering results
+heatmap(as.matrix(significant_gene_data_ordered), Rowv=as.dendrogram(gene_cluster), 
+        Colv=NA,  # Do not reorder columns
+        labRow=rownames(significant_gene_data_ordered), 
+        distfun = function(x) dist(x, method = "euclidean"),
+        hclustfun = function(x) hclust(x, method = "complete"),
+        main = "HCA with Sample and Gene Clustering",
+        xlab = "Sample Classification (Groups)",
+        ylab = "Genes",
+        # margins = c(15, 10),
+        cexCol = 0.2,
+        cexRow = 0.2,
+        lasCol = 2
+)
+# Close the PNG file
+# dev.off()
+```
+
+## Classification
+```{r}
+library(MASS)
+
+pca_data$group <- factor(pca_data$group)
+# Check the levels of 'group'
+l <- levels(pca_data$group) # Should be exactly two levels
+model <- glm(group ~ PC1 + PC2, data = pca_data, family = "binomial")
+
+# Step 2: Make predictions
+pca_data$predicted_group <- predict(model, pca_data, type = "response")
+pca_data$predicted_group <- ifelse(pca_data$predicted_group > 0.5, "CB", "AD")
+
+# Step 3: Visualization
+ggplot(pca_data, aes(x = PC1, y = PC2, color = predicted_group, shape = group)) +
+  geom_point(alpha = 0.8) +
+  scale_color_manual(values = c("CB" = "blue", "AD" = "red")) +
+  scale_shape_manual(values = c("CB" = 16, "AD" = 17)) +
+  labs(title = "Classification of Samples",
+       x = "Principal Component 1",
+       y = "Principal Component 2",
+       color = "Predicted Group",
+       shape = "Actual Group") +
+  theme_minimal()
+```
+
+```{r}
+class.names <- names(significant_gene_data ) %>% sub("[0-9]+$", "", .)
+signif_gene.t <- data.frame(cbind(class.names, t(significant_gene_data))) %>% 
+  mutate(
+    gsm_number = str_extract(class.names, "^GSM[0-9]+"),
+    group = str_extract(class.names, "[^-]+$"),
+    class.names = group
+  ) %>% 
+  arrange(group, gsm_number) %>% 
+  dplyr::select(-group, -gsm_number)
+
+# Select samples for training set,
+# Considerign 80:20 split
+trn_rows <- c(1:22, 29:42)
+
+training_set <- signif_gene.t[trn_rows,]
+test_set <-  signif_gene.t[-trn_rows,]
+
+classes <- list(
+train =training_set[,1], test =test_set[,1]
+)
+
+training_set <- training_set[-1]
+test_set <- test_set[-1]
+
+# Train the model using lda on the all genes of the training set
+training_set <- as.data.frame(lapply(training_set, function(x) as.numeric(as.character(x))))
+lda_model  <- lda(classes$train ~ ., training_set) 
+# # Convert probe values to numeric
+test_set <- as.data.frame(lapply(test_set, function(x) as.numeric(as.character(x))))
+out <- predict(lda_model, test_set)
+
+# # Create a confusion matrix
+conf_matrix <- table(out$class,classes$test)
+conf_matrix
+# 
+# # Calculate the number of misclassified samples
+misclassified <- sum(conf_matrix) - sum(diag(conf_matrix))
+print(misclassified)
+
+lda_test <- predict(lda_model, test_set)
+
+# Extract the discriminant functions
+discriminant_functions <- lda_test$x
+
+color_mapping <- c("AD" = "red", "CB" = "blue")
+symbols_mapping <-  c("AD" = 17, "CB" = 16)
+colors_for_plot <- color_mapping[out$class]
+symbols_for_plot <- symbols_mapping[classes$test]
+
+plot(discriminant_functions[,1], col=colors_for_plot, pch = symbols_for_plot,
+         xlab="Sample Index", ylab="Discriminant Function 1", 
+         main="LDA: Discriminant Function 1  on Test Set")
+
+# Add a legend for colors (Predicted Classes)
+legend("bottomright", 
+       legend = names(color_mapping), 
+       col = unname(color_mapping), 
+       pch = rep(1, length(color_mapping)),  # uniform symbol for color legend
+       title = "Predicted Classes")
+
+legend("topleft", 
+       legend = names(symbols_mapping), 
+       col = "black",  # uniform color for symbol legend
+       pch = unname(symbols_mapping), 
+       title = "Actual Classes")
+```
+## Gene Enrichment Analysis
+
+```{r}
+top_genes_enrich <- top_genes_to_label %>% pull(gene.name)
+top_genes_enrich
+
+library(biomaRt)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(hgu133plus2.db) # Load the specific annotation package for  Affymetrix chip
+
+annotations <- select(hgu133plus2.db, keys = top_genes_enrich, columns = c("SYMBOL", "GENENAME", "ENTREZID", "GO"), keytype = "PROBEID")
+
+annotations
+```
+```{r}
+library(clusterProfiler)
+
+# Extract entrez ids from  annotations
+entrez_ids <- unique(annotations$ENTREZID)
+entrez_ids <- entrez_ids[!is.na(entrez_ids)]
+
+# Perform GO enrichment analysis
+ego <- enrichGO(gene = entrez_ids, 
+                OrgDb = org.Hs.eg.db, 
+                keyType = "ENTREZID", 
+                ont = "ALL", 
+                pAdjustMethod = "BH", 
+                qvalueCutoff = 0.05, 
+                readable = TRUE)
+
+```
+```{r}
+dotplot(ego) + ggtitle("GO Pathway Enrichment Analysis")
+```
+
+
+```{r}
+# KEGG pathway enrichment
+kegg <- enrichKEGG(gene = entrez_ids,
+                   organism = 'hsa',
+                   pvalueCutoff = 0.05)
+
+
+
+# Visualization for pathway enrichment
+dotplot(kegg) + ggtitle("KEGG Pathway Enrichment Analysis")
+```
+```
+
