@@ -1,7 +1,7 @@
 # RNASeq-Workflow
 
 # Project Title: Distinct Transcriptomic Profiles of Early-Onset Atopic Dermatitis in Blood of Pediatric Patients
-## As a part of Course AS.410.671.01: Gene Expression Data Analysis and Visualization
+#### As a part of Course AS.410.671.01: Gene Expression Data Analysis and Visualization
 ---
 
 ## Introduction & Background
