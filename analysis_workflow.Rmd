@@ -33,9 +33,11 @@ library(fpc)
 library(utils)
 library(ggpubr)
 
+# Change path as per your system
 path <- "~/Desktop/Gene_Expression/Datasets"
-# Uncomment to dowload files from NCBI GEO
 setwd(path)
+
+# Uncomment to dowload files from NCBI GEO
 getGEOSuppFiles("GSE116486")
 
 path <- normalizePath(path)
@@ -48,17 +50,6 @@ exdir <- file.path(path, "GSE116486/GSE116486_RAW")
 if (!dir.exists(exdir)) {
   dir.create(exdir, recursive = TRUE)
 }
-
-# Extract the tar file
-untar(tar_file, exdir = exdir, verbose = TRUE)
-tar_file <- file.path(path, "GSE116486/GSE116486_RAW.tar")
-exdir <- file.path(path, "GSE116486/GSE116486_RAW")
-
-# Create the directory if it doesn't exist
-if (!dir.exists(exdir)) {
-  dir.create(exdir, recursive = TRUE)
-}
-
 # Extract tar file
 untar(tar_file, exdir = exdir)
 
